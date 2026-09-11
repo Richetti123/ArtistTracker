@@ -2,13 +2,14 @@ import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaile
 import P from 'pino';
 import qrcode from 'qrcode-terminal';
 import chalk from 'chalk';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { config } from './lib/config.js';
 import { handleMessage } from './handler.js';
 import { runScan } from './lib/tracker.js';
 import { purgeExpiredMedia } from './lib/store.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+let restartInProgress = false;
 
 function printWelcome() {
   console.clear();
@@ -30,13 +31,42 @@ function printWelcome() {
   console.log(chalk.magentaBright('━━━━━━━━━━━━━━━━━━ CONSOLA EN VIVO ━━━━━━━━━━━━━━━━━━'));
 }
 
+function clearArtistTimers() {
+  if (global.artistScanTimer) {
+    clearInterval(global.artistScanTimer);
+    global.artistScanTimer = null;
+  }
+  if (global.cleanupTimer) {
+    clearInterval(global.cleanupTimer);
+    global.cleanupTimer = null;
+  }
+}
+
+function resetSessionFolder() {
+  if (!existsSync(config.paths.sessions)) return;
+  console.log(chalk.yellow('[WA] La sesión guardada no está activa. Eliminando sessions/ para volver a vincular...'));
+  rmSync(config.paths.sessions, { recursive: true, force: true });
+  console.log(chalk.green('[WA] Carpeta sessions/ eliminada correctamente.'));
+}
+
+async function restartWithoutSession() {
+  if (restartInProgress) return;
+  restartInProgress = true;
+  clearArtistTimers();
+  resetSessionFolder();
+  console.log(chalk.yellow('[WA] Reiniciando ArtistTracker sin la sesión anterior...'));
+  await sleep(1000);
+  restartInProgress = false;
+  await start();
+}
+
 async function start() {
   printWelcome();
   mkdirSync(config.paths.sessions, { recursive: true });
   mkdirSync(config.paths.data, { recursive: true });
   mkdirSync(config.paths.media, { recursive: true });
 
-  console.log(chalk.blue('[BOOT] Cargando credenciales de WhatsApp...'));
+  console.log(chalk.blue('[BOOT] Comprobando sesión guardada de WhatsApp...'));
   const { state, saveCreds } = await useMultiFileAuthState(config.paths.sessions);
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')}${isLatest === false ? ' (la librería reporta que no es la última)' : ''}`));
@@ -67,10 +97,11 @@ async function start() {
     }
 
     if (connection === 'open') {
+      restartInProgress = false;
       console.log(chalk.greenBright('\n╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮'));
       console.log(chalk.greenBright('┃ 🟢 WHATSAPP CONECTADO CORRECTAMENTE         ┃'));
       console.log(chalk.greenBright('╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯'));
-      console.log(chalk.gray('[BOOT] Sesión guardada. El QR ya no será necesario en próximos arranques.'));
+      console.log(chalk.gray('[BOOT] Sesión activa y guardada. El QR no será necesario mientras siga activa.'));
       console.log(chalk.gray('[BOOT] Iniciando primer escaneo ahora...'));
 
       if (!global.artistScanTimer) {
@@ -92,13 +123,20 @@ async function start() {
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
       console.error(chalk.red(`[WA] Conexión cerrada. Código: ${code ?? 'desconocido'}`));
-      if (code !== DisconnectReason.loggedOut) {
-        console.log(chalk.yellow('[WA] Intentando reconectar en 5 segundos...'));
-        await sleep(5000);
-        start().catch(err => console.error(chalk.red('[BOOT] Error al reconectar:'), err));
-      } else {
-        console.error(chalk.red('[WA] Sesión cerrada definitivamente. Para volver a vincular, elimina la carpeta sessions/ y ejecuta npm start.'));
+
+      if (code === DisconnectReason.loggedOut) {
+        await restartWithoutSession();
+        return;
       }
+
+      if (!state.creds?.registered) {
+        await restartWithoutSession();
+        return;
+      }
+
+      console.log(chalk.yellow('[WA] La conexión se cerró temporalmente. Intentando reconectar en 5 segundos...'));
+      await sleep(5000);
+      if (!restartInProgress) start().catch(err => console.error(chalk.red('[BOOT] Error al reconectar:'), err));
     }
   });
 
