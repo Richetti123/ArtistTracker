@@ -7,6 +7,7 @@ import { config } from './lib/config.js';
 import { handleMessage } from './handler.js';
 import { runScan } from './lib/tracker.js';
 import { purgeExpiredMedia } from './lib/store.js';
+import { sendArtistEvidence } from './lib/evidence.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let restartInProgress = false;
@@ -29,6 +30,7 @@ function printWelcome() {
   console.log(chalk.yellow('🎟️ Eventos: Ticketmaster · Fever · Entradas.com'));
   console.log('');
   console.log(chalk.magentaBright('━━━━━━━━━━━━━━━━━━ CONSOLA EN VIVO ━━━━━━━━━━━━━━━━━━'));
+  console.log(chalk.gray('Comandos disponibles: !buscar ARTISTA · !test'));
 }
 
 function clearArtistTimers() {
@@ -78,6 +80,34 @@ async function start() {
     browser: ['ArtistTracker', 'Desktop', '3.0'],
     markOnlineOnConnect: false
   });
+
+  const rawSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (...args) => {
+    const [jid, content] = args;
+    const body = content?.text || '';
+    console.log(chalk.cyan(`[WA->SEND] destino=${jid} tipo=${content?.text ? 'texto' : content?.image ? 'imagen' : content?.video ? 'video' : 'otro'}`));
+    if (body) console.log(chalk.gray(`[WA->SEND] ${body.slice(0, 500)}${body.length > 500 ? '...' : ''}`));
+
+    const result = await rawSendMessage(...args);
+
+    if (!sock.__artistTrackerEvidenceRunning && typeof body === 'string') {
+      const match = body.match(/(?:BÚSQUEDA MANUAL:|🎤 \*)([^*\n]+)\*?/i) || body.match(/ARTISTA DETECTADO EN MADRID[\s\S]*?🎤 \*([^*]+)\*/i);
+      const isAlert = /BÚSQUEDA MANUAL:|ARTISTA DETECTADO EN MADRID/i.test(body);
+      if (isAlert && match?.[1]) {
+        const artist = match[1].trim();
+        sock.__artistTrackerEvidenceRunning = true;
+        try {
+          await sendArtistEvidence(sock, artist, rawSendMessage);
+        } catch (err) {
+          console.error(chalk.red(`[EVIDENCE] Error para ${artist}: ${err.message}`));
+        } finally {
+          sock.__artistTrackerEvidenceRunning = false;
+        }
+      }
+    }
+
+    return result;
+  };
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -144,7 +174,7 @@ async function start() {
     for (const msg of messages) {
       try {
         const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || '';
-        if (body) console.log(chalk.hex('#FF8C00')(`[WhatsApp] ${msg.key.remoteJid}: ${body}`));
+        console.log(chalk.hex('#FF8C00')(`[WhatsApp] ${msg.key.remoteJid}${msg.key.remoteJidAlt ? ` (alt ${msg.key.remoteJidAlt})` : ''}: ${body || '[mensaje sin texto]'}`));
         await handleMessage(sock, msg);
       } catch (err) {
         console.error(chalk.red('[MESSAGE] Error:'), err);
