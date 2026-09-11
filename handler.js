@@ -34,5 +34,8 @@ export async function handleMessage(sock, msg) {
     }
   }
 
-  await answerInterest(sock, msg);
+  const normalizedMessage = authorized
+    ? { ...msg, key: { ...msg.key, remoteJid: config.targetJid } }
+    : msg;
+  await answerInterest(sock, normalizedMessage);
 }
