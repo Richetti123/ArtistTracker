@@ -62,7 +62,7 @@ async function start() {
       console.log(chalk.greenBright('\n╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮'));
       console.log(chalk.greenBright('┃ 🟢 WHATSAPP CONECTADO CORRECTAMENTE         ┃'));
       console.log(chalk.greenBright('╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯'));
-      console.log(chalk.gray(`[BOOT] Iniciando primer escaneo ahora...`));
+      console.log(chalk.gray('[BOOT] Iniciando primer escaneo ahora...'));
 
       if (!global.artistScanTimer) {
         try {
@@ -74,7 +74,7 @@ async function start() {
           runScan(sock).catch(err => console.error(chalk.red('[SCAN] Error:'), err));
         }, config.scan.intervalMs);
         global.cleanupTimer = setInterval(() => {
-          purgeExpiredMedia().catch?.(err => console.error(chalk.red('[CLEANUP] Error:'), err));
+          Promise.resolve(purgeExpiredMedia()).catch(err => console.error(chalk.red('[CLEANUP] Error:'), err));
         }, 60 * 60 * 1000);
         console.log(chalk.green(`[SCHEDULER] Escaneo automático programado cada ${Math.round(config.scan.intervalMs / 60000)} minutos.`));
       }
