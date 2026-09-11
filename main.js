@@ -1,7 +1,8 @@
 import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import P from 'pino';
-import { mkdirSync } from 'node:fs';
+import qrcode from 'qrcode-terminal';
 import chalk from 'chalk';
+import { mkdirSync } from 'node:fs';
 import { config } from './lib/config.js';
 import { handleMessage } from './handler.js';
 import { runScan } from './lib/tracker.js';
@@ -37,14 +38,14 @@ async function start() {
 
   console.log(chalk.blue('[BOOT] Cargando credenciales de WhatsApp...'));
   const { state, saveCreds } = await useMultiFileAuthState(config.paths.sessions);
-  const { version } = await fetchLatestBaileysVersion();
-  console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')}`));
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')}${isLatest === false ? ' (la librería reporta que no es la última)' : ''}`));
 
   const sock = makeWASocket({
     auth: state,
     version,
     logger: P({ level: 'silent' }),
-    browser: ['ArtistTracker', 'Chrome', '2.1'],
+    browser: ['ArtistTracker', 'Desktop', '3.0'],
     markOnlineOnConnect: false
   });
 
@@ -52,16 +53,24 @@ async function start() {
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log(chalk.yellow('\n╭──────────────────────────────────────────────╮'));
-      console.log(chalk.yellow('│ 📲 ESCANEA EL QR EN WHATSAPP                 │'));
-      console.log(chalk.yellow('│ WhatsApp → Dispositivos vinculados            │'));
-      console.log(chalk.yellow('╰──────────────────────────────────────────────╯\n'));
+      console.log(chalk.yellow('\n╭────────────────────────────────────────────────────────╮'));
+      console.log(chalk.yellow('│ 📲 ESCANEA ESTE CÓDIGO QR CON WHATSAPP                 │'));
+      console.log(chalk.yellow('│ WhatsApp → Ajustes → Dispositivos vinculados           │'));
+      console.log(chalk.yellow('╰────────────────────────────────────────────────────────╯\n'));
+      console.log(chalk.whiteBright('                 CÓDIGO QR DE VINCULACIÓN\n'));
+      qrcode.generate(qr, { small: true });
+      console.log(chalk.yellow('\n⏳ Esperando a que escanees el QR...'));
+    }
+
+    if (connection === 'connecting') {
+      console.log(chalk.blue('[WA] Conectando con WhatsApp...'));
     }
 
     if (connection === 'open') {
       console.log(chalk.greenBright('\n╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮'));
       console.log(chalk.greenBright('┃ 🟢 WHATSAPP CONECTADO CORRECTAMENTE         ┃'));
       console.log(chalk.greenBright('╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯'));
+      console.log(chalk.gray('[BOOT] Sesión guardada. El QR ya no será necesario en próximos arranques.'));
       console.log(chalk.gray('[BOOT] Iniciando primer escaneo ahora...'));
 
       if (!global.artistScanTimer) {
@@ -88,7 +97,7 @@ async function start() {
         await sleep(5000);
         start().catch(err => console.error(chalk.red('[BOOT] Error al reconectar:'), err));
       } else {
-        console.error(chalk.red('[WA] Sesión cerrada definitivamente. Elimina sessions/ y vuelve a vincular.'));
+        console.error(chalk.red('[WA] Sesión cerrada definitivamente. Para volver a vincular, elimina la carpeta sessions/ y ejecuta npm start.'));
       }
     }
   });
