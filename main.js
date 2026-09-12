@@ -1,4 +1,4 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser, makeInMemoryStore } from '@whiskeysockets/baileys';
 import P from 'pino';
 import qrcode from 'qrcode-terminal';
 import chalk from 'chalk';
@@ -85,6 +85,7 @@ async function start() {
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')}${isLatest === false ? ' (la librería reporta que no es la última)' : ''}`));
 
+  const store = makeInMemoryStore({ logger: P({ level: 'silent' }).child({ level: 'store' }) });
   const sock = makeWASocket({
     auth: state,
     version,
@@ -96,12 +97,15 @@ async function start() {
     getMessage: async key => {
       try {
         const jid = jidNormalizedUser(key?.remoteJid) || key?.remoteJid;
+        const stored = store.loadMessage(jid, key?.id) || store.loadMessage(key?.remoteJid, key?.id);
+        if (stored?.message) return stored.message;
         return messageStore.get(`${jid}:${key?.id}`)?.message || messageStore.get(`${key?.remoteJid}:${key?.id}`)?.message || undefined;
       } catch {
         return undefined;
       }
     }
   });
+  store.bind(sock.ev);
 
   const rawSendMessage = sock.sendMessage.bind(sock);
   sock.sendMessage = async (...args) => {
