@@ -1,5 +1,5 @@
 import * as baileys from '@whiskeysockets/baileys';
-import { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser, makeInMemoryStore } from '@whiskeysockets/baileys';
+import { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, fetchLatestWaWebVersion, jidNormalizedUser, makeInMemoryStore } from '@whiskeysockets/baileys';
 import P from 'pino';
 import qrcode from 'qrcode-terminal';
 import chalk from 'chalk';
@@ -14,6 +14,7 @@ const makeWASocket = baileys.default?.default || baileys.default || baileys.make
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let restartInProgress = false;
+let reconnectTimer = null;
 const messageStore = new Map();
 const MESSAGE_STORE_MAX = 2000;
 
@@ -77,6 +78,15 @@ async function restartWithoutSession() {
   await start();
 }
 
+function scheduleReconnect() {
+  if (restartInProgress || reconnectTimer) return;
+  console.log(chalk.yellow('[WA] Reintentando conexión en 5 segundos...'));
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    start().catch(err => console.error(chalk.red('[BOOT] Error al reconectar:'), err));
+  }, 5000);
+}
+
 async function start() {
   printWelcome();
   mkdirSync(config.paths.sessions, { recursive: true });
@@ -85,8 +95,28 @@ async function start() {
 
   console.log(chalk.blue('[BOOT] Comprobando sesión guardada de WhatsApp...'));
   const { state, saveCreds } = await useMultiFileAuthState(config.paths.sessions);
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-  console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')}${isLatest === false ? ' (la librería reporta que no es la última)' : ''}`));
+
+  // WhatsApp puede rechazar versiones antiguas con HTTP 405 (client_too_old).
+  // Primero intentamos obtener la revisión directamente desde web.whatsapp.com.
+  // Si falla, usamos la versión publicada por Baileys como respaldo.
+  let version;
+  let versionSource = 'Baileys';
+  try {
+    const liveVersion = await fetchLatestWaWebVersion();
+    if (Array.isArray(liveVersion?.version) && liveVersion.version.length === 3) {
+      version = liveVersion.version;
+      versionSource = 'WhatsApp Web';
+    }
+  } catch (err) {
+    console.log(chalk.yellow(`[BOOT] No se pudo consultar la versión de WhatsApp Web: ${err.message}`));
+  }
+
+  if (!version) {
+    const baileysVersion = await fetchLatestBaileysVersion();
+    version = baileysVersion.version;
+  }
+
+  console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')} (${versionSource})`));
 
   if (typeof makeWASocket !== 'function') {
     throw new TypeError('La versión instalada de Baileys no expone makeWASocket como función.');
@@ -104,7 +134,7 @@ async function start() {
     getMessage: async key => {
       try {
         const jid = jidNormalizedUser(key?.remoteJid) || key?.remoteJid;
-        const stored = store.loadMessage(jid, key?.id) || store.loadMessage(key?.remoteJid, key?.id);
+        const stored = await store.loadMessage(jid, key?.id) || await store.loadMessage(key?.remoteJid, key?.id);
         if (stored?.message) return stored.message;
         return messageStore.get(`${jid}:${key?.id}`)?.message || messageStore.get(`${key?.remoteJid}:${key?.id}`)?.message || undefined;
       } catch {
@@ -160,6 +190,10 @@ async function start() {
 
     if (connection === 'open') {
       restartInProgress = false;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       console.log(chalk.greenBright('\n╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮'));
       console.log(chalk.greenBright('┃ 🟢 WHATSAPP CONECTADO CORRECTAMENTE         ┃'));
       console.log(chalk.greenBright('╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯'));
@@ -184,18 +218,25 @@ async function start() {
 
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
-      console.error(chalk.red(`[WA] Conexión cerrada. Código: ${code ?? 'desconocido'}`));
+      const reason = lastDisconnect?.error?.data?.reason || lastDisconnect?.error?.output?.payload?.message || lastDisconnect?.error?.message || 'desconocido';
+      console.error(chalk.red(`[WA] Conexión cerrada. Código: ${code ?? 'desconocido'}${reason ? ` · ${reason}` : ''}`));
+
+      // SOLO una desconexión real de sesión cerrada por WhatsApp debe borrar auth.
+      // Una sesión nueva (creds.registered=false) NO se debe reiniciar aquí: hacerlo
+      // destruye el flujo de vinculación y puede impedir que el QR llegue al terminal.
       if (code === DisconnectReason.loggedOut) {
         await restartWithoutSession();
         return;
       }
+
       if (!state.creds?.registered) {
-        await restartWithoutSession();
+        console.log(chalk.yellow('[WA] No hay una sesión vinculada todavía. Manteniendo la sesión vacía para que Baileys pueda emitir el QR.'));
+        scheduleReconnect();
         return;
       }
-      console.log(chalk.yellow('[WA] La conexión se cerró temporalmente. Intentando reconectar en 5 segundos...'));
-      await sleep(5000);
-      if (!restartInProgress) start().catch(err => console.error(chalk.red('[BOOT] Error al reconectar:'), err));
+
+      console.log(chalk.yellow('[WA] La conexión se cerró temporalmente. Conservando la sesión y reconectando...'));
+      scheduleReconnect();
     }
   });
 
