@@ -1,4 +1,5 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser, makeInMemoryStore } from '@whiskeysockets/baileys';
+import * as baileys from '@whiskeysockets/baileys';
+import { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser, makeInMemoryStore } from '@whiskeysockets/baileys';
 import P from 'pino';
 import qrcode from 'qrcode-terminal';
 import chalk from 'chalk';
@@ -8,6 +9,8 @@ import { handleMessage } from './handler.js';
 import { runScan } from './lib/tracker.js';
 import { purgeExpiredMedia } from './lib/store.js';
 import { sendArtistEvidence } from './lib/evidence.js';
+
+const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let restartInProgress = false;
@@ -84,6 +87,10 @@ async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(config.paths.sessions);
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')}${isLatest === false ? ' (la librería reporta que no es la última)' : ''}`));
+
+  if (typeof makeWASocket !== 'function') {
+    throw new TypeError('La versión instalada de Baileys no expone makeWASocket como función.');
+  }
 
   const store = makeInMemoryStore({ logger: P({ level: 'silent' }).child({ level: 'store' }) });
   const sock = makeWASocket({
