@@ -78,7 +78,8 @@ async function start() {
     version,
     logger: P({ level: 'silent' }),
     browser: ['ArtistTracker', 'Desktop', '3.0'],
-    markOnlineOnConnect: false
+    markOnlineOnConnect: false,
+    shouldIgnoreJid: () => false
   });
 
   const rawSendMessage = sock.sendMessage.bind(sock);
@@ -90,14 +91,15 @@ async function start() {
 
     const result = await rawSendMessage(...args);
 
-    if (!sock.__artistTrackerEvidenceRunning && typeof body === 'string') {
+    if (!sock.__artistTrackerEvidenceRunning && !sock.__artistTrackerTestRunning && typeof body === 'string') {
       const match = body.match(/(?:BÚSQUEDA MANUAL:|🎤 \*)([^*\n]+)\*?/i) || body.match(/ARTISTA DETECTADO EN MADRID[\s\S]*?🎤 \*([^*]+)\*/i);
       const isAlert = /BÚSQUEDA MANUAL:|ARTISTA DETECTADO EN MADRID/i.test(body);
       if (isAlert && match?.[1]) {
         const artist = match[1].trim();
+        const evidenceDestination = sock.__artistTrackerCommandChatJid || config.targetJid;
         sock.__artistTrackerEvidenceRunning = true;
         try {
-          await sendArtistEvidence(sock, artist, rawSendMessage);
+          await sendArtistEvidence(sock, artist, rawSendMessage, evidenceDestination);
         } catch (err) {
           console.error(chalk.red(`[EVIDENCE] Error para ${artist}: ${err.message}`));
         } finally {
@@ -122,9 +124,7 @@ async function start() {
       console.log(chalk.yellow('\n⏳ Esperando a que escanees el QR...'));
     }
 
-    if (connection === 'connecting') {
-      console.log(chalk.blue('[WA] Conectando con WhatsApp...'));
-    }
+    if (connection === 'connecting') console.log(chalk.blue('[WA] Conectando con WhatsApp...'));
 
     if (connection === 'open') {
       restartInProgress = false;
@@ -153,17 +153,14 @@ async function start() {
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
       console.error(chalk.red(`[WA] Conexión cerrada. Código: ${code ?? 'desconocido'}`));
-
       if (code === DisconnectReason.loggedOut) {
         await restartWithoutSession();
         return;
       }
-
       if (!state.creds?.registered) {
         await restartWithoutSession();
         return;
       }
-
       console.log(chalk.yellow('[WA] La conexión se cerró temporalmente. Intentando reconectar en 5 segundos...'));
       await sleep(5000);
       if (!restartInProgress) start().catch(err => console.error(chalk.red('[BOOT] Error al reconectar:'), err));
@@ -173,8 +170,6 @@ async function start() {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       try {
-        // The handler owns incoming-message presentation and command routing.
-        // Keeping this listener thin prevents duplicated console entries.
         await handleMessage(sock, msg);
       } catch (err) {
         console.error(chalk.red('[MESSAGE] Error:'), err);
