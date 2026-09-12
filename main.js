@@ -23,9 +23,7 @@ function rememberMessage(msg) {
   const id = msg?.key?.id;
   if (!jid || !id) return;
   messageStore.set(`${jid}:${id}`, msg);
-  while (messageStore.size > MESSAGE_STORE_MAX) {
-    messageStore.delete(messageStore.keys().next().value);
-  }
+  while (messageStore.size > MESSAGE_STORE_MAX) messageStore.delete(messageStore.keys().next().value);
 }
 
 function printWelcome() {
@@ -41,9 +39,10 @@ function printWelcome() {
   console.log(chalk.gray(`   Escaneo automático: cada ${Math.round(config.scan.intervalMs / 60000)} minutos`));
   console.log(chalk.gray(`   WhatsApp destino: +${config.targetJid.split('@')[0]}`));
   console.log('');
-  console.log(chalk.yellow('📡 Fuentes sociales: Instagram · TikTok · SoundCloud · Gemini'));
-  console.log(chalk.yellow('🎧 Oyentes: Songstats (si hay API key) → Zyla (si hay API key)'));
-  console.log(chalk.yellow('🎟️ Eventos: Ticketmaster · Fever · Entradas.com'));
+  console.log(chalk.yellow('📡 Fuentes: Ticketmaster · Fever · Entradas.com · La Ganzúa · Bandsintown · Instagram · TikTok · SoundCloud'));
+  console.log(chalk.yellow('🎧 Oyentes: Songstats → Zyla → Spotify web → Music Metrics Vault → Kworb'));
+  console.log(chalk.yellow(`🧠 Visión IA: Gemini ${config.vision.model} (si GEMINI_API_KEY está configurada)`));
+  console.log(chalk.yellow(`⏱️ Cooldown entre alertas automáticas: ${Math.round(config.alerts.cooldownMs / 60000)} minutos`));
   console.log('');
   console.log(chalk.magentaBright('━━━━━━━━━━━━━━━━━━ CONSOLA EN VIVO ━━━━━━━━━━━━━━━━━━'));
   console.log(chalk.gray('Comandos disponibles: !buscar ARTISTA · !test · !ayuda'));
@@ -96,9 +95,6 @@ async function start() {
   console.log(chalk.blue('[BOOT] Comprobando sesión guardada de WhatsApp...'));
   const { state, saveCreds } = await useMultiFileAuthState(config.paths.sessions);
 
-  // WhatsApp puede rechazar versiones antiguas con HTTP 405 (client_too_old).
-  // Primero intentamos obtener la revisión directamente desde web.whatsapp.com.
-  // Si falla, usamos la versión publicada por Baileys como respaldo.
   let version;
   let versionSource = 'Baileys';
   try {
@@ -110,17 +106,13 @@ async function start() {
   } catch (err) {
     console.log(chalk.yellow(`[BOOT] No se pudo consultar la versión de WhatsApp Web: ${err.message}`));
   }
-
   if (!version) {
     const baileysVersion = await fetchLatestBaileysVersion();
     version = baileysVersion.version;
   }
-
   console.log(chalk.blue(`[BOOT] Baileys listo. Versión WA: ${version.join('.')} (${versionSource})`));
 
-  if (typeof makeWASocket !== 'function') {
-    throw new TypeError('La versión instalada de Baileys no expone makeWASocket como función.');
-  }
+  if (typeof makeWASocket !== 'function') throw new TypeError('La versión instalada de Baileys no expone makeWASocket como función.');
 
   const store = makeInMemoryStore({ logger: P({ level: 'silent' }).child({ level: 'store' }) });
   const sock = makeWASocket({
@@ -145,6 +137,37 @@ async function start() {
   store.bind(sock.ev);
 
   const rawSendMessage = sock.sendMessage.bind(sock);
+  let autoAlertQueue = Promise.resolve();
+  let lastAutoAlertAt = 0;
+
+  // Los avisos automáticos se consideran un "paquete" por artista: texto + evidencia.
+  // El siguiente artista espera 5 minutos, pero sus evidencias se envían inmediatamente
+  // después del texto para no convertir un único aviso en una espera artificialmente larga.
+  sock.__artistTrackerSendAutoMessage = (jid, content, context = null) => {
+    autoAlertQueue = autoAlertQueue.then(async () => {
+      const wait = Math.max(0, config.alerts.cooldownMs - (Date.now() - lastAutoAlertAt));
+      if (wait > 0) {
+        console.log(chalk.yellow(`[ALERT-QUEUE] Esperando ${Math.ceil(wait / 1000)}s antes del siguiente artista para evitar spam.`));
+        await sleep(wait);
+      }
+      const result = await rawSendMessage(jid, content);
+      const artist = context?.artist;
+      if (artist && !sock.__artistTrackerEvidenceRunning) {
+        sock.__artistTrackerEvidenceRunning = true;
+        try {
+          await sendArtistEvidence(sock, artist, rawSendMessage, jid, context?.analysis || null);
+        } catch (err) {
+          console.error(chalk.red(`[EVIDENCE] Error para ${artist}: ${err.message}`));
+        } finally {
+          sock.__artistTrackerEvidenceRunning = false;
+        }
+      }
+      lastAutoAlertAt = Date.now();
+      return result;
+    });
+    return autoAlertQueue;
+  };
+
   sock.sendMessage = async (...args) => {
     const [jid, content] = args;
     const body = content?.text || '';
@@ -161,7 +184,7 @@ async function start() {
         const evidenceDestination = sock.__artistTrackerCommandChatJid || config.targetJid;
         sock.__artistTrackerEvidenceRunning = true;
         try {
-          await sendArtistEvidence(sock, artist, rawSendMessage, evidenceDestination);
+          await sendArtistEvidence(sock, artist, rawSendMessage, evidenceDestination, sock.__artistTrackerLastAnalysis || null);
         } catch (err) {
           console.error(chalk.red(`[EVIDENCE] Error para ${artist}: ${err.message}`));
         } finally {
@@ -169,7 +192,6 @@ async function start() {
         }
       }
     }
-
     return result;
   };
 
@@ -220,21 +242,15 @@ async function start() {
       const code = lastDisconnect?.error?.output?.statusCode;
       const reason = lastDisconnect?.error?.data?.reason || lastDisconnect?.error?.output?.payload?.message || lastDisconnect?.error?.message || 'desconocido';
       console.error(chalk.red(`[WA] Conexión cerrada. Código: ${code ?? 'desconocido'}${reason ? ` · ${reason}` : ''}`));
-
-      // SOLO una desconexión real de sesión cerrada por WhatsApp debe borrar auth.
-      // Una sesión nueva (creds.registered=false) NO se debe reiniciar aquí: hacerlo
-      // destruye el flujo de vinculación y puede impedir que el QR llegue al terminal.
       if (code === DisconnectReason.loggedOut) {
         await restartWithoutSession();
         return;
       }
-
       if (!state.creds?.registered) {
         console.log(chalk.yellow('[WA] No hay una sesión vinculada todavía. Manteniendo la sesión vacía para que Baileys pueda emitir el QR.'));
         scheduleReconnect();
         return;
       }
-
       console.log(chalk.yellow('[WA] La conexión se cerró temporalmente. Conservando la sesión y reconectando...'));
       scheduleReconnect();
     }
