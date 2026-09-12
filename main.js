@@ -139,6 +139,18 @@ async function start() {
   const rawSendMessage = sock.sendMessage.bind(sock);
   let autoAlertQueue = Promise.resolve();
   let lastAutoAlertAt = 0;
+  const runScanSafely = async () => {
+    if (global.artistTrackerScanRunning) {
+      console.log(chalk.yellow('[SCAN] Ya hay un escaneo en curso; se evita iniciar otro en paralelo.'));
+      return;
+    }
+    global.artistTrackerScanRunning = true;
+    try {
+      await runScan(sock);
+    } finally {
+      global.artistTrackerScanRunning = false;
+    }
+  };
 
   // Los avisos automáticos se consideran un "paquete" por artista: texto + evidencia.
   // El siguiente artista espera 5 minutos, pero sus evidencias se envían inmediatamente
@@ -224,12 +236,12 @@ async function start() {
 
       if (!global.artistScanTimer) {
         try {
-          await runScan(sock);
+          await runScanSafely();
         } catch (err) {
           console.error(chalk.red('[SCAN] Error durante el primer escaneo:'), err);
         }
         global.artistScanTimer = setInterval(() => {
-          runScan(sock).catch(err => console.error(chalk.red('[SCAN] Error:'), err));
+          runScanSafely().catch(err => console.error(chalk.red('[SCAN] Error:'), err));
         }, config.scan.intervalMs);
         global.cleanupTimer = setInterval(() => {
           Promise.resolve(purgeExpiredMedia()).catch(err => console.error(chalk.red('[CLEANUP] Error:'), err));
