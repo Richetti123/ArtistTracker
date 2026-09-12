@@ -1,4 +1,4 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser } from '@whiskeysockets/baileys';
 import P from 'pino';
 import qrcode from 'qrcode-terminal';
 import chalk from 'chalk';
@@ -11,6 +11,18 @@ import { sendArtistEvidence } from './lib/evidence.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let restartInProgress = false;
+const messageStore = new Map();
+const MESSAGE_STORE_MAX = 2000;
+
+function rememberMessage(msg) {
+  const jid = msg?.key?.remoteJid;
+  const id = msg?.key?.id;
+  if (!jid || !id) return;
+  messageStore.set(`${jid}:${id}`, msg);
+  while (messageStore.size > MESSAGE_STORE_MAX) {
+    messageStore.delete(messageStore.keys().next().value);
+  }
+}
 
 function printWelcome() {
   console.clear();
@@ -79,7 +91,16 @@ async function start() {
     logger: P({ level: 'silent' }),
     browser: ['ArtistTracker', 'Desktop', '3.0'],
     markOnlineOnConnect: false,
-    shouldIgnoreJid: () => false
+    shouldIgnoreJid: () => false,
+    syncFullHistory: false,
+    getMessage: async key => {
+      try {
+        const jid = jidNormalizedUser(key?.remoteJid) || key?.remoteJid;
+        return messageStore.get(`${jid}:${key?.id}`)?.message || messageStore.get(`${key?.remoteJid}:${key?.id}`)?.message || undefined;
+      } catch {
+        return undefined;
+      }
+    }
   });
 
   const rawSendMessage = sock.sendMessage.bind(sock);
@@ -170,6 +191,7 @@ async function start() {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       try {
+        rememberMessage(msg);
         await handleMessage(sock, msg);
       } catch (err) {
         console.error(chalk.red('[MESSAGE] Error:'), err);
