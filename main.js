@@ -30,7 +30,7 @@ function printWelcome() {
   console.log(chalk.yellow('🎟️ Eventos: Ticketmaster · Fever · Entradas.com'));
   console.log('');
   console.log(chalk.magentaBright('━━━━━━━━━━━━━━━━━━ CONSOLA EN VIVO ━━━━━━━━━━━━━━━━━━'));
-  console.log(chalk.gray('Comandos disponibles: !buscar ARTISTA · !test'));
+  console.log(chalk.gray('Comandos disponibles: !buscar ARTISTA · !test · !ayuda'));
 }
 
 function clearArtistTimers() {
@@ -173,8 +173,8 @@ async function start() {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       try {
-        const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || '';
-        console.log(chalk.hex('#FF8C00')(`[WhatsApp] ${msg.key.remoteJid}${msg.key.remoteJidAlt ? ` (alt ${msg.key.remoteJidAlt})` : ''}: ${body || '[mensaje sin texto]'}`));
+        // The handler owns incoming-message presentation and command routing.
+        // Keeping this listener thin prevents duplicated console entries.
         await handleMessage(sock, msg);
       } catch (err) {
         console.error(chalk.red('[MESSAGE] Error:'), err);
