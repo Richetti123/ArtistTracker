@@ -1,4 +1,4 @@
-import { jidDecode } from '@whiskeysockets/baileys';
+import { areJidsSameUser, jidDecode, jidNormalizedUser } from '@whiskeysockets/baileys';
 import { answerInterest } from './lib/tracker.js';
 import { config } from './lib/config.js';
 import { executeCommand, parseCommand, isKnownCommand } from './lib/commands.js';
@@ -8,65 +8,121 @@ function unique(values) {
   return [...new Set(values.filter(Boolean).map(value => String(value).trim()))];
 }
 
-function phoneJid(value) {
+function normalizeJid(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  if (raw.endsWith('@s.whatsapp.net')) return raw;
-  if (/^\d+(?::\d+)?$/.test(raw)) return `${raw.split(':')[0]}@s.whatsapp.net`;
+  try {
+    return jidNormalizedUser(raw) || raw;
+  } catch {
+    return raw;
+  }
+}
+
+function phoneJid(value) {
+  const normalized = normalizeJid(value);
+  if (normalized.endsWith('@s.whatsapp.net')) return normalized;
+  if (/^\d+(?::\d+)?$/.test(normalized)) return `${normalized.split(':')[0]}@s.whatsapp.net`;
   return '';
+}
+
+function isLid(value) {
+  return normalizeJid(value).endsWith('@lid');
 }
 
 function senderCandidates(msg) {
   return unique([
-    msg?.key?.remoteJid,
-    msg?.key?.remoteJidAlt,
     msg?.key?.participant,
     msg?.key?.participantAlt,
+    msg?.key?.remoteJidAlt,
     msg?.participant,
     msg?.sender,
-    msg?.senderAlt
+    msg?.senderAlt,
+    msg?.key?.senderPn,
+    msg?.key?.participantPn,
+    msg?.senderPn,
+    msg?.key?.remoteJid
   ]);
 }
 
 async function resolveLid(sock, jid) {
-  const value = String(jid || '').trim();
-  if (!value.endsWith('@lid')) return [];
+  const value = normalizeJid(jid);
+  if (!isLid(value)) return [];
+
   const resolved = [];
+  const push = value => {
+    if (value) resolved.push(String(value).trim());
+  };
+
   try {
-    if (typeof sock?.getPNForLID === 'function') {
-      const pn = await sock.getPNForLID(value);
-      if (pn) resolved.push(pn);
+    const mapping = sock?.signalRepository?.lidMapping;
+    if (typeof mapping?.getPNForLID === 'function') {
+      push(await mapping.getPNForLID(value));
     }
   } catch (err) {
-    console.log(chalk.gray(`[AUTH] No se pudo resolver LID ${value}: ${err.message}`));
+    console.log(chalk.gray(`[AUTH] LID store no pudo resolver ${value}: ${err.message}`));
   }
-  return resolved;
+
+  try {
+    if (typeof sock?.getPNForLID === 'function') {
+      push(await sock.getPNForLID(value));
+    }
+  } catch (err) {
+    console.log(chalk.gray(`[AUTH] API LID no pudo resolver ${value}: ${err.message}`));
+  }
+
+  return unique(resolved);
+}
+
+async function expandIdentity(sock, jid) {
+  const value = normalizeJid(jid);
+  if (!value) return [];
+
+  const identities = [value];
+  const pn = phoneJid(value);
+  if (pn) identities.push(pn);
+
+  if (isLid(value)) identities.push(...await resolveLid(sock, value));
+
+  try {
+    const decoded = jidDecode(value);
+    if (decoded?.user && decoded?.server) {
+      identities.push(normalizeJid(`${decoded.user}@${decoded.server}`));
+    }
+  } catch {}
+
+  return unique(identities);
 }
 
 async function senderMatchesTarget(sock, msg) {
-  const target = phoneJid(config.targetJid) || config.targetJid;
+  const targetIdentities = await expandIdentity(sock, config.targetJid);
   const candidates = senderCandidates(msg);
-  if (candidates.includes(target)) return true;
 
   for (const candidate of candidates) {
-    const normalized = phoneJid(candidate);
-    if (normalized && normalized === target) return true;
-
-    const decoded = candidate.includes('@') ? jidDecode(candidate) : null;
-    if (decoded?.user && decoded?.server && phoneJid(`${decoded.user}@${decoded.server}`) === target) return true;
-
-    const aliases = await resolveLid(sock, candidate);
-    if (aliases.some(alias => phoneJid(alias) === target || String(alias).trim() === target)) return true;
+    const identities = await expandIdentity(sock, candidate);
+    for (const identity of identities) {
+      for (const target of targetIdentities) {
+        if (identity === target) return true;
+        try {
+          if (areJidsSameUser(identity, target)) return true;
+        } catch {}
+      }
+    }
   }
+
   return false;
 }
 
 function extractBody(msg) {
   let message = msg?.message;
   if (!message) return '';
-  if (message.ephemeralMessage?.message) message = message.ephemeralMessage.message;
-  if (message.viewOnceMessage?.message) message = message.viewOnceMessage.message;
-  if (message.viewOnceMessageV2?.message) message = message.viewOnceMessageV2.message;
+
+  for (let i = 0; i < 4; i++) {
+    if (message?.ephemeralMessage?.message) message = message.ephemeralMessage.message;
+    else if (message?.viewOnceMessage?.message) message = message.viewOnceMessage.message;
+    else if (message?.viewOnceMessageV2?.message) message = message.viewOnceMessageV2.message;
+    else if (message?.viewOnceMessageV2Extension?.message) message = message.viewOnceMessageV2Extension.message;
+    else break;
+  }
 
   return String(
     message?.conversation ||
@@ -75,8 +131,11 @@ function extractBody(msg) {
     message?.videoMessage?.caption ||
     message?.documentMessage?.caption ||
     message?.buttonsResponseMessage?.selectedButtonId ||
+    message?.buttonResponseMessage?.selectedButtonId ||
     message?.listResponseMessage?.singleSelectReply?.selectedRowId ||
     message?.templateButtonReplyMessage?.selectedId ||
+    message?.editedMessage?.message?.conversation ||
+    message?.editedMessage?.message?.extendedTextMessage?.text ||
     ''
   ).trim();
 }
