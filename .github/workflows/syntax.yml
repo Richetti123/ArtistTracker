@@ -1,0 +1,22 @@
+name: ArtistTracker syntax check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check JavaScript syntax
+        run: |
+          node --check lib/identity.js
+          node --check lib/tracker.js
+          node --check lib/commands.js
+          node --check lib/evidence.js
+          node --check main.js
