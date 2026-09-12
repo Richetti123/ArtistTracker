@@ -5,18 +5,19 @@ Bot de WhatsApp para detectar artistas con actividad en Madrid y avisar al fotó
 ## Flujo de detección
 1. Descubre artistas por dos vías: fuentes sociales y agendas/ticketing de Madrid.
 2. Comprueba eventos directamente con scrapers de Ticketmaster, Fever, Entradas.com, La Ganzúa y Bandsintown.
-3. Comprueba oyentes mensuales en este orden: Songstats → Zyla → Spotify web → Music Metrics Vault → Kworb.
-4. Consulta Gemini para identificar país/escena, género y contexto del artista.
-5. Marca con ⭐ los géneros prioritarios: reggaeton, pop, indie, rock, trap, bachata, dembow y musica criolla.
-6. Analiza Instagram/TikTok/SoundCloud cuando sus adaptadores responden.
-7. Descarga imágenes públicas y ejecuta OCR.
-8. Si `GEMINI_API_KEY` está configurada, ejecuta visión multimodal sobre las imágenes: detecta si son portadas/artwork, busca texto, calles, recintos, monumentos y señales visuales de Madrid y explica la evidencia sin inventar una ubicación.
-9. Las portadas de canciones/álbumes no se adjuntan como "evidencia" salvo que la IA determine que contienen una pista geográfica relevante.
-10. Un evento de Madrid confirmado por ticketing cuenta como evidencia fuerte aunque las APIs sociales estén caídas.
-11. Envía el aviso automáticamente al número configurado y pregunta SÍ/NO.
-12. Los avisos automáticos tienen 5 minutos de cooldown entre artistas para evitar spam.
-13. NO no crea una blacklist: el artista puede volver a aparecer si posteriormente se detecta otra oportunidad relevante.
-14. La falta de respuesta provoca limpieza automática del material a los 7 días.
+3. Si existe `TICKETMASTER_API_KEY`, consulta además la Discovery API oficial de Ticketmaster antes de los scrapers.
+4. Comprueba oyentes mensuales en este orden: Songstats → Zyla → Spotify web → Music Metrics Vault → Kworb.
+5. Consulta Gemini para identificar país/escena, género y contexto del artista.
+6. Marca con ⭐ los géneros prioritarios: reggaeton, pop, indie, rock, trap, bachata, dembow y musica criolla.
+7. Analiza Instagram/TikTok/SoundCloud cuando sus adaptadores responden.
+8. Descarga imágenes públicas y ejecuta OCR.
+9. Si `GEMINI_API_KEY` está configurada, ejecuta visión multimodal sobre las imágenes: detecta si son portadas/artwork, busca texto, calles, recintos, monumentos y señales visuales de Madrid y explica la evidencia sin inventar una ubicación.
+10. Las portadas de canciones/álbumes no se adjuntan como "evidencia" salvo que la IA determine que contienen una pista geográfica relevante.
+11. Un evento de Madrid confirmado por ticketing cuenta como evidencia fuerte aunque las APIs sociales estén caídas.
+12. Envía el aviso automáticamente al número configurado y pregunta SÍ/NO.
+13. Los avisos automáticos tienen 5 minutos de cooldown entre artistas para evitar spam.
+14. NO no crea una blacklist: el artista puede volver a aparecer si posteriormente se detecta otra oportunidad relevante.
+15. La falta de respuesta provoca limpieza automática del material a los 7 días.
 
 ## Descubrimiento automático
 El escaneo ya no interpreta `0 candidatos` de TikTok como "no hay artistas". Las agendas web se consultan de forma independiente y los fallos de cada fuente se registran por separado. Esto permite encontrar un concierto aunque Instagram/TikTok/Starlight estén devolviendo HTTP 500.
@@ -40,13 +41,14 @@ Spotify no expone el contador de oyentes mensuales en su Web API pública. Artis
 No se inventan cifras: si ninguna fuente devuelve un número verificable, el artista no pasa el filtro de 40.000 oyentes.
 
 ## Variables de entorno
-Configura al menos una fuente de oyentes y, para visión/IA directa, Gemini:
+Configura al menos una fuente de oyentes y, para visión/IA directa, Gemini. Para la mejor cobertura de conciertos, añade también la API de Ticketmaster:
 
 ```bash
 SONGSTATS_API_KEY=tu_clave_de_songstats
 ZYLA_API_KEY=tu_clave_de_zyla
 GEMINI_API_KEY=tu_clave_de_google_gemini
 GEMINI_VISION_MODEL=gemini-2.5-flash
+TICKETMASTER_API_KEY=tu_clave_de_ticketmaster
 ```
 
 No guardes estas claves dentro del repositorio.
