@@ -1,60 +1,67 @@
-# ArtistTracker 3.0
+# ArtistTracker 5.0
 
-Bot de WhatsApp para detectar artistas con actividad en Madrid y avisar al fotógrafo configurado.
+Bot de WhatsApp para detectar artistas con actividad en Madrid y avisar al número configurado.
 
 ## Flujo de detección
-1. Descubre artistas por dos vías: fuentes sociales y agendas/ticketing de Madrid.
-2. Comprueba eventos directamente con scrapers de Ticketmaster, Fever, Entradas.com, La Ganzúa y Bandsintown.
-3. Si existe `TICKETMASTER_API_KEY`, consulta además la Discovery API oficial de Ticketmaster antes de los scrapers.
-4. Comprueba oyentes mensuales en este orden: Songstats → Zyla → Spotify web → Music Metrics Vault → Kworb.
-5. Consulta Gemini para identificar país/escena, género y contexto del artista.
-6. Marca con ⭐ los géneros prioritarios: reggaeton, pop, indie, rock, trap, bachata, dembow y musica criolla.
-7. Analiza Instagram/TikTok/SoundCloud cuando sus adaptadores responden.
-8. Descarga imágenes públicas y ejecuta OCR.
-9. Si `GEMINI_API_KEY` está configurada, ejecuta visión multimodal sobre las imágenes: detecta si son portadas/artwork, busca texto, calles, recintos, monumentos y señales visuales de Madrid y explica la evidencia sin inventar una ubicación.
-10. Las portadas de canciones/álbumes no se adjuntan como "evidencia" salvo que la IA determine que contienen una pista geográfica relevante.
-11. Un evento de Madrid confirmado por ticketing cuenta como evidencia fuerte aunque las APIs sociales estén caídas.
-12. Envía el aviso automáticamente al número configurado y pregunta SÍ/NO.
-13. Los avisos automáticos tienen 5 minutos de cooldown entre artistas para evitar spam.
-14. NO no crea una blacklist: el artista puede volver a aparecer si posteriormente se detecta otra oportunidad relevante.
-15. La falta de respuesta provoca limpieza automática del material a los 7 días.
-
-## Descubrimiento automático
-El escaneo ya no interpreta `0 candidatos` de TikTok como "no hay artistas". Las agendas web se consultan de forma independiente y los fallos de cada fuente se registran por separado. Esto permite encontrar un concierto aunque Instagram/TikTok/Starlight estén devolviendo HTTP 500.
-
-## Visión IA
-ArtistTracker usa la API oficial de Gemini cuando existe `GEMINI_API_KEY`. El modelo por defecto es `gemini-2.5-flash`. La visión busca específicamente:
-- monumentos y lugares históricos de Madrid;
-- nombres de calles, plazas, estaciones y recintos;
-- carteles, señalética y texto visible;
-- arquitectura y otros indicios geográficos;
-- diferencias entre una fotografía real, una portada, un flyer o artwork;
-- pistas de actualidad, sin confundir la fecha de subida con la fecha de la fotografía.
-
-Si no existe `GEMINI_API_KEY`, el bot conserva OCR + análisis textual y usa el endpoint Starlight como respaldo para texto, pero no puede hacer visión multimodal real.
+1. Descubre artistas por agendas/ticketing de Madrid y fuentes sociales.
+2. Comprueba eventos con Ticketmaster, Fever, Entradas.com, La Ganzúa y Bandsintown.
+3. Si existe `TICKETMASTER_API_KEY`, consulta además la Discovery API oficial de Ticketmaster.
+4. Identifica primero el artista real. Para nombres homónimos consulta varios candidatos de Spotify y Songstats y, cuando `GEMINI_API_KEY` existe, Gemini compara nombre, canciones, país, género y oyentes para evitar confundir el nombre de una canción con el artista.
+5. Verifica oyentes mensuales priorizando **Spotify**. Si Spotify no entrega el contador, utiliza un **scraper de Songstats**, buscando el artista y consultando su perfil/área de Spotify. No se usa Apple Music para validar oyentes mensuales.
+6. El mínimo sigue siendo 40.000 oyentes mensuales; una cifra no verificable no permite pasar el filtro.
+7. Consulta fuentes de metadata para país/escena y género. Los países se muestran con nombre completo y bandera, por ejemplo `Colombia🇨🇴`, nunca `CO`.
+8. Analiza Instagram/TikTok/SoundCloud cuando sus adaptadores responden.
+9. Descarga imágenes públicas y ejecuta OCR. Gemini Vision diferencia fotografías reales, portadas, flyers y artwork.
+10. Un evento de Madrid confirmado por ticketing cuenta como evidencia fuerte aunque las redes estén caídas.
+11. Los avisos automáticos se envían al `targetJid` configurado.
+12. Las búsquedas manuales con `.buscar ARTISTA` muestran también la foto de perfil del artista cuando Spotify/Songstats la proporcionan.
+13. Los avisos nuevos adjuntan la foto de perfil y, cuando existe material visual público guardado de la detección, también evidencia multimedia.
+14. No existe blacklist permanente: un artista puede volver a aparecer si se detecta una nueva oportunidad relevante.
+15. El material temporal se limpia automáticamente según `retentionDays`.
 
 ## Oyentes mensuales
-Spotify no expone el contador de oyentes mensuales en su Web API pública. ArtistTracker usa varias fuentes para evitar que una API caída provoque falsos negativos:
+Spotify es la fuente prioritaria. ArtistTracker intenta:
 
-`Songstats → Zyla → Spotify web → Music Metrics Vault → Kworb`.
+`Spotify web scraper → Songstats scraper → otras fuentes públicas de identidad`
 
-No se inventan cifras: si ninguna fuente devuelve un número verificable, el artista no pasa el filtro de 40.000 oyentes.
+El scraper de Songstats utiliza perfiles como `https://songstats.com/artist/.../...` y puede consultar la vista de Spotify con `source=spotify&popupStyle=graph&graphDataId=account-popularity`.
+
+No se acepta una cifra inventada. Si no existe un número verificable, el artista no pasa el filtro de 40.000 oyentes.
+
+## Identidad y homónimos
+ArtistTracker no debe tratar una coincidencia textual aislada como identidad. Para nombres ambiguos compara:
+- nombre del artista en Spotify;
+- ID de Spotify;
+- títulos de varias canciones asociadas al mismo perfil;
+- oyentes mensuales;
+- género y país;
+- coincidencias en Songstats y otras fuentes;
+- análisis de Gemini cuando está disponible.
+
+Una canción llamada, por ejemplo, `Superestrella` no debe convertirse automáticamente en un artista llamado `Superestrella` solo porque apareció en una página de resultados.
+
+## WhatsApp
+El número de destino está definido en `lib/config.js` mediante `targetJid`. El escaneo automático utiliza ese destino de forma explícita.
+
+Comandos disponibles para el número autorizado:
+- `.buscar ARTISTA` — búsqueda manual.
+- `.test` — prueba de envío.
+- `.update` — ejecuta `git pull --ff-only` y, si llegaron cambios, reinicia automáticamente ArtistTracker para cargarlos.
+- `.ayuda` — ayuda.
+
+`.update` no modifica `gatitabot`; solo ejecuta el pull del repositorio en el que está instalado ArtistTracker.
+
+## Visión IA
+Con `GEMINI_API_KEY`, Gemini analiza texto e imágenes para detectar evidencia actual de Madrid y descartar artwork/portadas como ubicación.
 
 ## Variables de entorno
-Configura al menos una fuente de oyentes y, para visión/IA directa, Gemini. Para la mejor cobertura de conciertos, añade también la API de Ticketmaster:
-
 ```bash
-SONGSTATS_API_KEY=tu_clave_de_songstats
-ZYLA_API_KEY=tu_clave_de_zyla
 GEMINI_API_KEY=tu_clave_de_google_gemini
 GEMINI_VISION_MODEL=gemini-2.5-flash
 TICKETMASTER_API_KEY=tu_clave_de_ticketmaster
 ```
 
-No guardes estas claves dentro del repositorio.
-
-## APIs sociales
-Los endpoints Starlight proporcionados son servicios de terceros/no oficiales y pueden fallar o cambiar. ArtistTracker los trata como adaptadores tolerantes a fallos y usa scrapers/eventos web como vía independiente. Para producción, sustituye cada adaptador por APIs oficiales o fuentes con permiso y respeta sus términos.
+`SONGSTATS_API_KEY` y `ZYLA_API_KEY` ya no son necesarios para el flujo principal de verificación de oyentes; se mantiene compatibilidad con el código heredado si se vuelve a necesitar.
 
 ## Arranque
 ```bash
